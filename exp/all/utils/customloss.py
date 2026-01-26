@@ -1,11 +1,12 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 class DiceLoss(nn.Module):
     def __init__(self, device):
         super(DiceLoss, self).__init__()
         self.device = device
-        
+    
     def forward(self, output, target):
         # Apply softmax to the output logits and use the class probabilities directly
         output = torch.softmax(output, dim=1)
@@ -25,7 +26,7 @@ class DiceLoss(nn.Module):
         dice = (2 * intersection + 1e-7) / (union + 1e-7)
         
         return 1 - dice
-    
+
 class DiceLoss2(nn.Module):
     def __init__(self, device, epsilon=1e-7):
         super(DiceLoss2, self).__init__()
@@ -65,3 +66,4 @@ class DiceLoss2(nn.Module):
         dl2 = 1 - (foreground_dice + background_dice)
         
         return dl2
+ 

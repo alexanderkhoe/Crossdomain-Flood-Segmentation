@@ -39,7 +39,7 @@ models_paths = {
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Train a Segmentation model')
     parser.add_argument('csv_path', type=str, help='Path to the csv file containing first column as image path and second column as mask path.')
-    parser.add_argument('--data_path', type=str, default='./data/sen1floods11', help='Path to the data directory.')
+    parser.add_argument('--data_path', type=str, default='./datasets/sen1floods11', help='Path to the data directory.')
     # parser.add_argument('model_path', type=str, help='Path to the trained model.')
     parser.add_argument('output_path', type=str, help='Path to save the segmented image.')
     parser.add_argument('--bands', type=list, default=[1,2,3,8,11,12], help='Bands indices that need to be used for segmentation. Recall that the model was trained on 6 bands (B, G, R, NIR, SWIR1, SWIR2).')

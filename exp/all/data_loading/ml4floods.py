@@ -54,7 +54,7 @@ STDS = [0.03381057, 0.03535441, 0.04496607, 0.07556641, 0.06130259, 0.04689224]
 # this is for testing, using ml4floods
 root = 'datasets/WorldFloodsv2'
 metadata_path = f'{root}/dataset_metadata.csv'
-test_path_label = f'{root}/train/PERMANENTWATERJRC/'    # comparable to 'LabelHand' in sen1floods11
+test_path_label = f'{root}/train/PERMANENTWATERJRC/'    # PermanentWater
 test_path_geojson = f'{root}/train/floodmaps/'          # comparable to 'GeoJSONHand' in sen1floods11 <- this should be rasterized into permanentwaterjrc
 test_path_s2 = f'{root}/train/S2/'                      # comparable to 'S2L1CHand' in sen1floods11
 # Unique class values: [0 1 2 3]
@@ -243,7 +243,7 @@ def download_flood_water_data_from_list(l):
       arr_y_new[arr_y == 0] = 255  # invalid -> ignore
       arr_y_new[arr_y == 1] = 0    # land -> land
       arr_y_new[arr_y == 2] = 1    # water -> water
-      arr_y_new[arr_y == 3] = 1    # permanent water -> water
+      arr_y_new[arr_y == 3] = 1    # permanent water -> water # sesuaikan dengan sen1floods11 karena include permanent water as water
       arr_y = arr_y_new
     else:
       # sen1floods11 label conversion:
@@ -281,26 +281,31 @@ def load_timor_leste_data_with_flood_masks():
         flood_mask, _ = load_geojson_mask(geojson_path, height, width, transform, crs)
         
         if flood_mask is not None:
-            # Now both are (H, W) shape
+            # Ensure flood_mask is 2D
+            if flood_mask.ndim == 3:
+                flood_mask = flood_mask.squeeze()
+            
+            # Start with a clean label array
             combined_label = np.zeros_like(arr_y)
             
-            # Start with land everywhere
-            combined_label[arr_y == 1] = 0    # land -> 0
-            
-            # Flood mask = actual water
-            combined_label[flood_mask == 1] = 1  # flood extent -> water (1)
-            
-            # Invalid areas stay invalid
+            # Step 1: Mark invalid areas first (highest priority)
             combined_label[arr_y == 0] = 255  # invalid -> 255
+
+            # Step 2: Mark land
+            combined_label[arr_y == 1] = 0  # land -> 0
+
+            # Step 3: Mark ALL water sources
+            combined_label[(arr_y == 2) | (arr_y == 3)] = 1  # water + permanent water -> 1
+            combined_label[flood_mask == 1] = 1  # flood extent from mask -> 1
             
             arr_y = combined_label
         else:
             # Fallback if no flood mask
             arr_y_new = np.zeros_like(arr_y)
-            arr_y_new[arr_y == 0] = 255
-            arr_y_new[arr_y == 1] = 0
-            arr_y_new[arr_y == 2] = 1
-            arr_y_new[arr_y == 3] = 1
+            arr_y_new[arr_y == 0] = 255  # invalid
+            arr_y_new[arr_y == 1] = 0    # land
+            arr_y_new[arr_y == 2] = 1    # flood water
+            arr_y_new[arr_y == 3] = 1    # permanent water  
             arr_y = arr_y_new
         
         data_files.append((arr_x, arr_y))
@@ -348,7 +353,7 @@ def get_test_loader(data_path, type):
                     worker_init_fn=None)
     return valid_loader
 
-def get_timor_leste_loader(use_flood_masks=True):
+def get_timor_leste_loader(use_flood_masks=False):
     """Get data loader for Timor-Leste test set using 224x224 patches"""
     if use_flood_masks:
         timor_leste_data = load_timor_leste_data_with_flood_masks()

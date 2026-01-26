@@ -52,8 +52,7 @@ SENTINEL_STDS = [0.03381057, 0.03535441, 0.04496607, 0.07556641, 0.06130259, 0.0
 root = 'datasets/WorldFloodsv2'
 metadata_path = f'{root}/dataset_metadata.csv'
 train_path = f'{root}/train/S2/' # supports all bands
-train_watermask_path = f'{root}/train/gt/' # supports only 1 bands
-
+train_watermask_path = f'{root}/train/PERMANENTWATERJRC/' # supports only 1 bands
 geojson_path = f'{root}/train/floodmaps/'
 
 geo_extension = '.geojson'

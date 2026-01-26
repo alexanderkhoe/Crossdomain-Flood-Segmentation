@@ -12,12 +12,8 @@ from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
 from enum import Enum
 from utils.testing import computeIOU, computeAccuracy, computeMetrics
-from utils.dice import DiceLoss, DiceLoss2
+from exp.all.utils.customloss import DiceLoss, DiceLoss2
 from data_loading.ml4floods import get_loader
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
-import numpy as np
 import json
 import gc
 
@@ -66,60 +62,6 @@ def parse_arguments():
 def get_number_of_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def visualize_predictions(imgs, masks, predictions, save_path, num_samples=5):
-    """
-    Visualize and save input images, ground truth masks, and predictions
-    
-    Args:
-        imgs: Input images tensor [B, C, H, W]
-        masks: Ground truth masks [B, 1, H, W] or [B, H, W]
-        predictions: Model predictions (logits) [B, num_classes, H, W]
-        save_path: Path to save the figure
-        num_samples: Number of samples to visualize from the batch
-    """
-    # Convert to numpy and move to CPU
-    imgs_np = imgs.cpu().numpy()
-    masks_np = masks.cpu().numpy()
-    
-    # Get predicted class (argmax over class dimension)
-    pred_np = torch.argmax(predictions, dim=1).cpu().numpy()
-    
-    # Handle mask dimensions
-    if len(masks_np.shape) == 4:
-        masks_np = masks_np.squeeze(1)
-    
-    num_samples = min(num_samples, imgs_np.shape[0])
-    
-    # Create figure with 3 columns: RGB image, ground truth, prediction
-    fig, axes = plt.subplots(num_samples, 3, figsize=(12, 4*num_samples))
-    if num_samples == 1:
-        axes = axes.reshape(1, -1)
-    
-    for i in range(num_samples):
-        # RGB visualization (use first 3 channels, normalize)
-        rgb = imgs_np[i, :3, :, :].transpose(1, 2, 0)
-        rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-8)
-        
-        # Plot RGB
-        axes[i, 0].imshow(rgb)
-        axes[i, 0].set_title(f'Sample {i+1}: Input RGB')
-        axes[i, 0].axis('off')
-        
-        # Plot ground truth
-        axes[i, 1].imshow(masks_np[i], cmap='Blues', vmin=0, vmax=1)
-        axes[i, 1].set_title('Ground Truth')
-        axes[i, 1].axis('off')
-        
-        # Plot prediction
-        axes[i, 2].imshow(pred_np[i], cmap='Blues', vmin=0, vmax=1)
-        axes[i, 2].set_title('Prediction')
-        axes[i, 2].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-
-
 def train_model(model, loader, optimizer, criterion, epoch, device):
     model.train()
     running_loss = 0.0
@@ -167,12 +109,6 @@ def test(model, loader, criterion, device, viz_dir=None, num_viz=5):
             
             metrics = computeMetrics(predictions, masks, device, criterion)
             metricss = {k: metricss.get(k, 0) + v for k, v in metrics.items()}
-            
-            # Visualize first batch if viz_dir is provided and not yet visualized
-            if viz_dir is not None and not visualized:
-                viz_path = os.path.join(viz_dir, f'predictions_batch_{index}.png')
-                visualize_predictions(imgs, masks, predictions, viz_path, num_viz)
-                visualized = True
             
             index += 1
             

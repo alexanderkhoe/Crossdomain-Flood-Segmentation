@@ -8,7 +8,11 @@ import os
 from models.u_net import UNet
 from models.prithvi_segmenter import PritviSegmenter
 from models.prithvi_unet import PrithviUNet
-from data_loading.ml4floods import timor_leste_events, test_path_s2, test_path_label, extension, getArrFlood, USED_BANDS, MEANS, STDS, INPUT_SIZE, PATCH_SIZE, processTimorLesteData
+from data_loading.ml4floods import (
+    timor_leste_events, test_path_s2, test_path_label, extension, 
+    getArrFlood, USED_BANDS, MEANS, STDS, INPUT_SIZE, PATCH_SIZE, 
+    processTimorLesteData, load_timor_leste_data_with_flood_masks
+)
 from torchvision import transforms
 
 def parse_arguments():
@@ -19,12 +23,14 @@ def parse_arguments():
                         help='Directory containing trained models (e.g., ./logs/comparison_xxx)')
     parser.add_argument('--batch_size', type=int, default=8, 
                         help='Batch size for inference (reduce if OOM)')
-    parser.add_argument('--output_path', type=str, default='./comparison_timor_leste.png',
-                        help='Path to save the comparison figure')
+    parser.add_argument('--output_dir', type=str, default='./comparison_outputs',
+                        help='Directory to save individual comparison figures')
     parser.add_argument('--max_samples', type=int, default=None,
                         help='Maximum number of patches to visualize (default: all)')
     parser.add_argument('--samples_per_event', type=int, default=3,
                         help='Number of patches to sample from each event')
+    parser.add_argument('--use_flood_masks', action='store_true',
+                        help='Use flood masks from GeoJSON as ground truth')
     
     # Model parameters (should match training)
     parser.add_argument('--prithvi_out_channels', type=int, default=768)
@@ -75,54 +81,94 @@ def load_model(model_name, args, device):
     
     return model
 
-def load_timor_leste_sampled_patches(samples_per_event=3):
+def load_timor_leste_sampled_patches(samples_per_event=3, use_flood_masks=None):
     """
     Load a subset of patches from each Timor-Leste event.
     This avoids loading all patches into memory at once.
+    
+    Args:
+        samples_per_event: Number of patches to sample from each event
+        use_flood_masks: If True, use flood masks from GeoJSON as ground truth
     """
     all_samples = []
     
-    for event_id, satellite in timor_leste_events.items():
-        img_path = f"{test_path_s2}{event_id}{extension}"
-        label_path = f"{test_path_label}{event_id}{extension}"
+    if use_flood_masks:
+        # Use the function that loads flood masks
+        print("Loading data with flood masks from GeoJSON...")
+        data_with_masks = load_timor_leste_data_with_flood_masks()
         
-        if not os.path.exists(img_path) or not os.path.exists(label_path):
-            raise ValueError(f"File not found: {img_path} or {label_path}")
-        
-        # Load raw arrays
-        arr_x = np.nan_to_num(getArrFlood(img_path))
-        arr_y = getArrFlood(label_path)
-        
-        # Convert ml4floods labels to binary
-        arr_y_new = np.zeros_like(arr_y)
-        arr_y_new[arr_y == 0] = 255  # invalid -> ignore
-        arr_y_new[arr_y == 1] = 0    # land -> land
-        arr_y_new[arr_y == 2] = 1    # water -> water
-        arr_y_new[arr_y == 3] = 1    # permanent water -> water
-        
-        # Get all patches for this event
-        patches = processTimorLesteData((arr_x, arr_y_new))
-        
-        # Sample evenly spaced patches
-        total_patches = len(patches)
-        if samples_per_event >= total_patches:
-            selected_indices = range(total_patches)
-        else:
-            # Evenly space samples across all patches
-            step = total_patches / samples_per_event
-            selected_indices = [int(i * step) for i in range(samples_per_event)]
-        
-        # Create samples for selected patches
-        for idx in selected_indices:
-            img, label = patches[idx]
-            all_samples.append({
-                'image': img,
-                'label': label,
-                'event_id': event_id,
-                'satellite': satellite,
-                'patch_idx': idx,
-                'total_patches': total_patches
-            })
+        # Process each event
+        event_ids = list(timor_leste_events.keys())
+        for idx, (event_id, satellite) in enumerate(timor_leste_events.items()):
+            arr_x, arr_y = data_with_masks[idx]
+            
+            # Get all patches for this event
+            patches = processTimorLesteData((arr_x, arr_y))
+            
+            # Sample evenly spaced patches
+            total_patches = len(patches)
+            if samples_per_event >= total_patches:
+                selected_indices = range(total_patches)
+            else:
+                # Evenly space samples across all patches
+                step = total_patches / samples_per_event
+                selected_indices = [int(i * step) for i in range(samples_per_event)]
+            
+            # Create samples for selected patches
+            for patch_idx in selected_indices:
+                img, label = patches[patch_idx]
+                all_samples.append({
+                    'image': img,
+                    'label': label,
+                    'event_id': event_id,
+                    'satellite': satellite,
+                    'patch_idx': patch_idx,
+                    'total_patches': total_patches
+                })
+    else:
+        # Original method without flood masks
+        print("Loading data with permanent water labels...")
+        for event_id, satellite in timor_leste_events.items():
+            img_path = f"{test_path_s2}{event_id}{extension}"
+            label_path = f"{test_path_label}{event_id}{extension}"
+            
+            if not os.path.exists(img_path) or not os.path.exists(label_path):
+                raise ValueError(f"File not found: {img_path} or {label_path}")
+            
+            # Load raw arrays
+            arr_x = np.nan_to_num(getArrFlood(img_path))
+            arr_y = getArrFlood(label_path)
+            
+            # Convert ml4floods labels to binary
+            arr_y_new = np.zeros_like(arr_y)
+            arr_y_new[arr_y == 0] = 255  # invalid -> ignore
+            arr_y_new[arr_y == 1] = 0    # land -> land
+            arr_y_new[arr_y == 2] = 1    # water -> water
+            arr_y_new[arr_y == 3] = 1    # permanent water -> water
+            
+            # Get all patches for this event
+            patches = processTimorLesteData((arr_x, arr_y_new))
+            
+            # Sample evenly spaced patches
+            total_patches = len(patches)
+            if samples_per_event >= total_patches:
+                selected_indices = range(total_patches)
+            else:
+                # Evenly space samples across all patches
+                step = total_patches / samples_per_event
+                selected_indices = [int(i * step) for i in range(samples_per_event)]
+            
+            # Create samples for selected patches
+            for idx in selected_indices:
+                img, label = patches[idx]
+                all_samples.append({
+                    'image': img,
+                    'label': label,
+                    'event_id': event_id,
+                    'satellite': satellite,
+                    'patch_idx': idx,
+                    'total_patches': total_patches
+                })
     
     return all_samples
 
@@ -163,81 +209,102 @@ def get_predictions_batch(models, images, device, batch_size=8):
     
     return predictions
 
-def create_comparison_figure(models, samples, device, save_path='comparison.png', batch_size=8):
+def save_individual_comparison(sample, predictions, model_names, output_path, use_flood_masks=False):
     """
-    Create a comparison figure showing RGB, Ground Truth, and predictions from all models
+    Create and save a single comparison figure for one patch
     """
+    num_cols = 2 + len(model_names)
+    fig, axes = plt.subplots(1, num_cols, figsize=(4*num_cols, 4))
+    
+    img_np = sample['image'].numpy()
+    mask_np = sample['label'].numpy()
+    
+    # Determine GT title based on data source
+    gt_title = 'Ground Truth\n(Flood Mask)' if use_flood_masks else 'Ground Truth\n(Permanent Water)'
+    
+    col = 0
+    
+    # Column 0: RGB visualization
+    rgb = img_np[:3, :, :].transpose(1, 2, 0)
+    rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-8)
+    axes[col].imshow(rgb)
+    axes[col].set_title('Input RGB', fontsize=14, fontweight='bold')
+    axes[col].axis('off')
+    col += 1
+    
+    # Column 1: Ground Truth
+    gt_vis = np.ma.masked_where(mask_np == 255, mask_np)
+    axes[col].imshow(gt_vis, cmap='Blues', vmin=0, vmax=1)
+    axes[col].set_title(gt_title, fontsize=14, fontweight='bold')
+    axes[col].axis('off')
+    col += 1
+    
+    # Remaining columns: Model predictions
+    for model_name in model_names:
+        axes[col].imshow(predictions[model_name], cmap='Blues', vmin=0, vmax=1)
+        display_name = model_name.replace('_', '-').upper()
+        if display_name == 'PRITHVI-UNET':
+            display_name = 'U-Prithvi'
+        axes[col].set_title(f'{display_name}', fontsize=14, fontweight='bold')
+        axes[col].axis('off')
+        col += 1
+    
+    # Add title with event and patch info
+    event_id = sample['event_id']
+    satellite = sample['satellite']
+    patch_idx = sample['patch_idx']
+    total_patches = sample['total_patches']
+    
+    data_source = 'Flood Masks' if use_flood_masks else 'Permanent Water'
+    plt.suptitle(f'{event_id} ({satellite}) - Patch {patch_idx}/{total_patches} (GT: {data_source})', 
+                 fontsize=16, fontweight='bold')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+def create_individual_figures(models, samples, device, output_dir, batch_size=8, use_flood_masks=False):
+    """
+    Create individual comparison figures for each sample
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
     num_samples = len(samples)
+    model_names = list(models.keys())
     
     # Prepare all images (keep on CPU initially)
     imgs = torch.stack([s['image'] for s in samples])
-    masks = torch.stack([s['label'] for s in samples])
     
     # Get predictions in batches
     print(f"  Running inference in batches of {batch_size}...")
     predictions = get_predictions_batch(models, imgs, device, batch_size)
     
-    # Convert to numpy
-    imgs_np = imgs.numpy()
-    masks_np = masks.numpy()
-    
-    # Create figure
-    num_cols = 2 + len(models)
-    fig, axes = plt.subplots(num_samples, num_cols, figsize=(4*num_cols, 4*num_samples))
-    
-    if num_samples == 1:
-        axes = axes.reshape(1, -1)
-    
-    model_names = list(models.keys())
-    
+    # Save individual figures
+    print(f"  Saving {num_samples} individual figures...")
     for i in range(num_samples):
-        col = 0
+        # Extract predictions for this sample
+        sample_preds = {name: predictions[name][i] for name in model_names}
         
-        # Column 0: RGB visualization
-        rgb = imgs_np[i, :3, :, :].transpose(1, 2, 0)
-        rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-8)
-        axes[i, col].imshow(rgb)
-        if i == 0:
-            axes[i, col].set_title('Input RGB', fontsize=14, fontweight='bold')
-        axes[i, col].axis('off')
-        col += 1
-        
-        # Column 1: Ground Truth
-        gt_vis = np.ma.masked_where(masks_np[i] == 255, masks_np[i])
-        axes[i, col].imshow(gt_vis, cmap='Blues', vmin=0, vmax=1)
-        if i == 0:
-            axes[i, col].set_title('Ground Truth', fontsize=14, fontweight='bold')
-        axes[i, col].axis('off')
-        col += 1
-        
-        # Remaining columns: Model predictions
-        for model_name in model_names:
-            axes[i, col].imshow(predictions[model_name][i], cmap='Blues', vmin=0, vmax=1)
-            if i == 0:
-                display_name = model_name.replace('_', '-').upper()
-                if display_name == 'PRITHVI-UNET':
-                    display_name = 'U-Prithvi'
-                axes[i, col].set_title(f'{display_name}', fontsize=14, fontweight='bold')
-            axes[i, col].axis('off')
-            col += 1
-        
-        # Add sample label
+        # Create filename
         event_id = samples[i]['event_id']
         patch_idx = samples[i]['patch_idx']
-        total_patches = samples[i]['total_patches']
-        axes[i, 0].text(-0.1, 0.5, f'{event_id}\nPatch {patch_idx}/{total_patches}', 
-                       transform=axes[i, 0].transAxes,
-                       fontsize=9, fontweight='bold',
-                       verticalalignment='center',
-                       horizontalalignment='right',
-                       rotation=90)
+        filename = f"{event_id}_patch{patch_idx:03d}.png"
+        output_path = os.path.join(output_dir, filename)
+        
+        # Save figure
+        save_individual_comparison(
+            samples[i], 
+            sample_preds, 
+            model_names, 
+            output_path,
+            use_flood_masks
+        )
+        
+        if (i + 1) % 10 == 0:
+            print(f"    Saved {i + 1}/{num_samples} figures...")
     
-    plt.suptitle(f'Model Comparison on Timor-Leste Test Set ({num_samples} Patches from 5 Events)', 
-                 fontsize=16, fontweight='bold', y=0.995)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"Comparison figure saved to: {save_path}")
-    plt.close(fig)
+    print(f"All figures saved to: {output_dir}")
 
 def main(args):
     # Set device
@@ -247,7 +314,10 @@ def main(args):
     
     # Load sampled Timor-Leste patches
     print(f"Loading {args.samples_per_event} patches per event from Timor-Leste...")
-    samples = load_timor_leste_sampled_patches(samples_per_event=args.samples_per_event)
+    samples = load_timor_leste_sampled_patches(
+        samples_per_event=args.samples_per_event,
+        use_flood_masks=args.use_flood_masks
+    )
     print(f"Loaded {len(samples)} total patches from 5 events:")
     
     # Count patches per event
@@ -279,14 +349,15 @@ def main(args):
     
     print(f"Successfully loaded {len(models)} models: {list(models.keys())}")
     
-    # Create comparison figure
-    print(f"\nCreating comparison figure with {len(samples)} patches...")
-    create_comparison_figure(
+    # Create individual comparison figures
+    print(f"\nCreating individual comparison figures for {len(samples)} patches...")
+    create_individual_figures(
         models, 
         samples,
         device, 
-        save_path=args.output_path,
-        batch_size=args.batch_size
+        output_dir=args.output_dir,
+        batch_size=args.batch_size,
+        use_flood_masks=args.use_flood_masks
     )
     
     print("Done!")
