@@ -16,7 +16,7 @@ prithvi
 cache
 events.out.tfevents.*
 *.zip
-logs/
+logs
 *.tif
 Timor_Processed
 plots
@@ -25,3 +25,5 @@ Timor_ML4Floods
 Timor_ML4FLoods
 Bolivia_Quant
 outputs
+*.json
+*.png

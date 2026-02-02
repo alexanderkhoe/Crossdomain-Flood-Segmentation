@@ -1,9 +1,0 @@
-*.ipynb
-logs
-data
-prithvi
-**/__pycache__/
-.DS_Store
-.conda/
-prithvi/.conda/
-out/
