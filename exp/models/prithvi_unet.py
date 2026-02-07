@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from models.blocks import DownBlock, UpBlockWithSkip, Block, UpBlock
 from models.random_half_dropout_layer import RandomHalfDropoutLayer
-from models.prithvi_encoder import PrithviEncoder
+from models.prithvi_encoder import PrithviEncoder 
     
 class PrithviUNet(nn.Module):
     def __init__(self, in_channels, out_channels, weights_path, device, prithvi_encoder_size = 768, unet_encoder_size = 768, combine_method = 'concat', dropout_prob=2/3):
@@ -74,3 +74,5 @@ class PrithviUNet(nn.Module):
         
         x = self.out(x)
         return x
+    
+

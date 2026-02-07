@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-import torch.nn.functional as F
 
 class DiceLoss(nn.Module):
     def __init__(self, device):
@@ -67,3 +66,6 @@ class DiceLoss2(nn.Module):
         
         return dl2
  
+
+
+

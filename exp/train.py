@@ -4,9 +4,12 @@ import sys
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+
+# modules for U-Prithvi and Unet
 from models.u_net import UNet
 from models.prithvi_segmenter import PritviSegmenter
-from models.prithvi_unet import PrithviUNet
+from models.prithvi_unet import PrithviUNet 
+
 import os
 from tqdm import tqdm
 from datetime import datetime
@@ -16,7 +19,9 @@ from utils.testing import computeIOU, computeAccuracy, computeMetrics
 
 from utils.customloss import DiceLoss, DiceLoss2 
 from segmentation_models_pytorch.losses import FocalLoss, LovaszLoss, JaccardLoss, TverskyLoss
+from torch.amp import autocast, GradScaler
 
+from peft import LoraConfig, get_peft_model
 from data_loading.sen1floods11 import get_loader
 import json
 
@@ -60,7 +65,7 @@ def get_number_of_trainable_parameters(model):
 def get_total_parameters(model):
     return sum(p.numel() for p in model.parameters())
 
-def train_model(model, loader, optimizer, criterion, epoch, device):
+def train_model(model, loader, optimizer, criterion, epoch, device, scaler=None):
     model.train()
     running_loss = 0.0
     running_samples = 0
@@ -71,16 +76,24 @@ def train_model(model, loader, optimizer, criterion, epoch, device):
         optimizer.zero_grad()
         imgs = imgs.to(device)
         masks = masks.to(device)
-        outputs = model(imgs)
-        targets = masks.squeeze(1)
- 
-        loss = criterion(outputs, targets.long())
-        loss.backward()
+        
+        # Use autocast for mixed precision
+        with autocast(device_type=str(device).split(':')[0], enabled=scaler is not None, dtype=torch.bfloat16):
+            outputs = model(imgs)
+            targets = masks.squeeze(1)
+            loss = criterion(outputs, targets.long())
+        
+        # Use scaler for mixed precision training
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
         
         iou = computeIOU(outputs, targets, device)
         accuracy = computeAccuracy(outputs, targets, device)
-        
-        optimizer.step()
     
         running_samples += targets.size(0)
         running_loss += loss.item()
@@ -163,16 +176,26 @@ def train_single_model(model_name, model, train_loader, valid_loader, test_loade
         criterion = TverskyLoss(mode='multiclass', alpha=0.3, beta=0.7, gamma=1.33, eps=1e-7, ignore_index=255, from_logits=True)
 
     scheduler = torch.optim.lr_scheduler.PolynomialLR(optimizer, args.epochs)
+    scaler = GradScaler() if device.type == 'cuda' else None
+
+    attention_based_model = ['prithvi', 'prithvi_unet', 'prithvi2.0_300M', 'prithvi2.0_unet_300M', 'prithvi2.0_600M', 'prithvi2.0_unet_600M']
     
-    if model_name in ['prithvi_sen1floods', 'prithvi_unet']:
+    if model_name in attention_based_model and args.prithvi_finetune_ratio is not None:
         model.change_prithvi_trainability(False)
         logger.info(f"Prithvi weights frozen. Trainable parameters: {get_number_of_trainable_parameters(model):,}")
         num_params_phase_1 = get_number_of_trainable_parameters(model)
+    else:
+        pass
     
+    # Phase 1
     for epoch in range(args.epochs):
         logger.info(f"\n{model_name} - Epoch {epoch+1}/{args.epochs}")
+        num_params_phase_1 = get_number_of_trainable_parameters(model)
         
-        train_loss, train_acc, train_iou = train_model(model, train_loader, optimizer, criterion, epoch, device)
+        if model_name in attention_based_model:
+            train_loss, train_acc, train_iou = train_model(model, train_loader, optimizer, criterion, epoch, device, scaler=scaler)
+        else:
+            train_loss, train_acc, train_iou = train_model(model, train_loader, optimizer, criterion, epoch, device, scaler=None)
         logger.info(f"Train - Loss: {train_loss:.4f}, Accuracy: {train_acc:.4f}, IoU: {train_iou:.4f}")
         
         writer.add_scalar("Loss/train", train_loss, epoch)
@@ -188,10 +211,12 @@ def train_single_model(model_name, model, train_loader, valid_loader, test_loade
             for metric_name, metric_value in val_metrics.items():
                 writer.add_scalar(f"{metric_name}/valid", metric_value, epoch)
         
-        if (epoch + 1) % args.save_model_interval == 0:
-            torch.save(model.state_dict(), os.path.join(model_dir, f"model_epoch_{epoch+1}.pt"))
-    
-    if model_name in ['prithvi_sen1floods', 'prithvi_unet'] and args.prithvi_finetune_ratio is not None:
+
+
+    # if finetune ratio is none then it will be end to end FT (Phase 2 will be disabled)
+
+    # Phase 2
+    if model_name in attention_based_model and args.prithvi_finetune_ratio is not None:
         logger.info(f"\nFine-tuning {model_name}")
         
         finetune_epochs = int(args.epochs * args.prithvi_finetune_ratio)
@@ -205,8 +230,8 @@ def train_single_model(model_name, model, train_loader, valid_loader, test_loade
         
         for epoch in range(args.epochs, args.epochs + finetune_epochs):
             logger.info(f"\n{model_name} - Fine-tune Epoch {epoch+1}/{args.epochs + finetune_epochs}")
-            
-            train_loss, train_acc, train_iou = train_model(model, train_loader, optimizer, criterion, epoch, device)
+             
+            train_loss, train_acc, train_iou = train_model(model, train_loader, optimizer, criterion, epoch, device, scaler=scaler)
             logger.info(f"Train - Loss: {train_loss:.4f}, Accuracy: {train_acc:.4f}, IoU: {train_iou:.4f}")
             
             writer.add_scalar("Loss/train", train_loss, epoch)
@@ -244,13 +269,43 @@ def train_single_model(model_name, model, train_loader, valid_loader, test_loade
         'bolivia_metrics': bolivia_metrics
     }
 
+def get_for_lora(model, model_name):
+    if model_name in ['prithvi2.0_300M', 'prithvi2.0_unet_300M', 'prithvi2.0_600M', 'prithvi2.0_unet_600M']:
+        lora_config = LoraConfig(
+            r=32,   
+            lora_alpha=64,  
+            target_modules = [
+                "attn.qkv",
+                "attn.proj",
+                "mlp.fc1", 
+                "mlp.fc2",
+                "decoder_embed",
+                "decoder_pred",
+            ],
+            # lora_dropout=0.1,
+            bias="none",
+            use_dora=True, 
+            task_type=None
+        )
+        logger.info(f"DoRA Applied to {model_name}")
+        model = get_peft_model(model, lora_config)
+
+        model.train()
+        
+        model.print_trainable_parameters()
+
+    else:
+        model = model
+
+    return model
+
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device('mps') if torch.backends.mps.is_available() else device
     logger.info(f'Using device: {device}')
     
     args.version = f"{args.version}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    base_log_dir = f'./logs/bolivia_{args.epochs}E_{args.loss_func.upper()}'
+    base_log_dir = f'./logs/bolivia_{args.epochs}E_{args.loss_func.upper()}_P20'
     os.makedirs(base_log_dir, exist_ok=True)
     
     args.num_classes = 2
@@ -262,17 +317,21 @@ def main(args):
     test_loader = get_loader(args.data_path, DatasetType.TEST.value, args)
     bolivia_loader = get_loader(args.data_path, DatasetType.BOLIVIA.value, args)
     
+    if args.prithvi_finetune_ratio == 0:
+        args.prithvi_finetune_ratio = None
+
     models = {
         'unet': UNet(
             in_channels=args.in_channels, 
             out_channels=args.num_classes, 
             unet_encoder_size=args.unet_out_channels
         ),
-        'prithvi_sen1floods': PritviSegmenter(
+        'prithvi': PritviSegmenter(
             weights_path='./prithvi/Prithvi_EO_V1_100M.pt', 
             device=device, 
             output_channels=args.num_classes, 
-            prithvi_encoder_size=args.prithvi_out_channels
+            prithvi_encoder_size=args.prithvi_out_channels,
+            trainable=False,
         ),
         'prithvi_unet': PrithviUNet(
             in_channels=args.in_channels, 
@@ -283,11 +342,31 @@ def main(args):
             unet_encoder_size=args.unet_out_channels, 
             combine_method=args.combine_func, 
             dropout_prob=args.random_dropout_prob
-        )
+        ),
+        # 'prithvi2.0_300M': PritviSegmenter(
+        #     weights_path='./prithvi20/Prithvi_EO_V2_300M.pt', 
+        #     device=device, 
+        #     output_channels=args.num_classes, 
+        #     prithvi_encoder_size=args.prithvi_out_channels,
+        #     trainable=True,
+        # ),
+        # 'prithvi2.0_unet_300M': PrithviUNet(
+        #     in_channels=args.in_channels, 
+        #     out_channels=args.num_classes, 
+        #     weights_path='./prithvi20/Prithvi_EO_V2_300M.pt', 
+        #     device=device, 
+        #     prithvi_encoder_size=args.prithvi_out_channels, 
+        #     unet_encoder_size=args.unet_out_channels, 
+        #     combine_method=args.combine_func, 
+        #     dropout_prob=args.random_dropout_prob
+        # )
     }
     
     results = []
     for model_name, model in models.items():
+
+        model = get_for_lora(model, model_name)
+        # print(model)
         model = model.to(device)
         result = train_single_model(
             model_name, model, train_loader, valid_loader, test_loader, bolivia_loader, 

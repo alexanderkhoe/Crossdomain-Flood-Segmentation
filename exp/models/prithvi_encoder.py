@@ -6,14 +6,14 @@ from models.masked_autoencoder import MaskedAutoencoderViT
 from torchvision import transforms
 
 class PrithviEncoder(nn.Module):
-    OUTPUT_WINDOWS_SIZE = 14
-    
     def __init__(self, weights_path, device, target_channels):
         super(PrithviEncoder, self).__init__()
         self.device = device
         self.target_channels = target_channels
         self.model_args = None
         self.train_args = None
+        self.is_v2_600M = '600M' in weights_path
+        self.is_v2_300M = '300M' in weights_path
         self.prithvi = self.load_prithvi(weights_path, device)
         self.block = Block(self.model_args["embed_dim"], target_channels)
         
@@ -37,7 +37,7 @@ class PrithviEncoder(nn.Module):
         
         model.load_state_dict(checkpoint, strict=False)
         model = model.to(device)
-        del model.decoder_blocks
+        # model.decoder_blocks = None
         
         return model
         
@@ -47,6 +47,15 @@ class PrithviEncoder(nn.Module):
         features = self.prithvi.forward_encoder(x)
         x = features[:, 1:, :]
         x = x.permute(0, 2, 1)
-        x = x.reshape(x.shape[0], 768, 14, 14)
+
+        if self.is_v2_600M:
+            x = x.reshape(x.shape[0], 1280, 14, 14)
+        elif self.is_v2_300M:
+            x = x.reshape(x.shape[0], 1024, 14, 14)
+        else:
+            x = x.reshape(x.shape[0], 768, 14, 14)
         x = self.block(x)
         return x
+    
+
+ 
