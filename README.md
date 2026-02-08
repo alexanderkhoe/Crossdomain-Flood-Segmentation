@@ -327,9 +327,3 @@ For Timor-Leste (10m resolution), the script includes computed statistics as com
 # Acknowledgement
  
 Large part of the source code is borrowed from [Vit Kostejn](https://github.com/kostejnv/prithvi_segmentation.git)
-
-# Citations
-
-```bibtex
-Vit Kostejn, Yamil Essus, Jenna Abrahamson, and Ranga Raju Vatsavai. U-Prithvi: Integrating a Foundation Model and U-Net for Enhanced Flood Inundation Mapping. In 13th International Conference on Geographic Information Science (GIScience 2025). Leibniz International Proceedings in Informatics (LIPIcs), Volume 346, pp. 18:1-18:17, Schloss Dagstuhl – Leibniz-Zentrum für Informatik (2025) https://doi.org/10.4230/LIPIcs.GIScience.2025.18
-```
